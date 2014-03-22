@@ -284,6 +284,28 @@ public class Spritzer {
      * Styles the pivot character.
      *
      * @param word
+     * 
+     * 
+     * from Spritz patent http://www.google.com/patents/US20140016867
+     * the position of the red letter "ORP is defined as
+     * 
+     * TABLE 1
+     *Total Number of 	ORP Character 	ORP Character
+     *Text Characters 	Position 	Position Ratio
+     *3 	2 	0.33
+     *4 	2 	0.25
+     *5 	2 	0.20
+     *6 	3 	0.33
+     *7 	3 	0.29
+     *8 	3 	0.25
+     *9 	3 	0.22
+     *10 	4 	0.30
+     *11 	4 	0.27
+     *12 	4 	0.25
+     *13 	4 	0.23
+     *14-20 	5 	NA
+     * 
+     * 
      */
     private void printWord(String word) {
         int startSpan = 0;
