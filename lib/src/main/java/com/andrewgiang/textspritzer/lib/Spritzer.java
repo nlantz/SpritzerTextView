@@ -307,7 +307,7 @@ public class Spritzer {
      * 
      * 
      */
-    private void printWord(String word) {
+     private void printWord(String word) {
         int startSpan = 0;
         int endSpan = 0;
         word = word.trim();
@@ -320,10 +320,35 @@ public class Spritzer {
             builder.append(word);
             word = builder.toString();
             startSpan = CHARS_LEFT_OF_PIVOT;
-            endSpan = startSpan + 1;
+           endSpan = startSpan + 1;
+
+
         } else if (word.length() <= CHARS_LEFT_OF_PIVOT * 2) {
+
             StringBuilder builder = new StringBuilder();
-            int halfPoint = word.length() / 2;
+	int halfPoint = word.length()/2;
+	switch(word.length()) {
+            case 1:                 
+            case 2:                      
+            case 3:                 
+            case 4:          
+            case 5: halfpoint = 2;
+                      break;
+            case 6:                    
+            case 7:                       
+            case 8:                      
+            case 9: halfpoint = 3;
+                      break;
+            case 10:                     
+            case 11:                   
+            case 12: 
+	    case 13: halfpoint = 4;
+                     break;  
+
+            default: halfpoint = 5;
+                     break;
+        }
+
             int beginPad = CHARS_LEFT_OF_PIVOT - halfPoint;
             for (int x = 0; x <= beginPad; x++) {
                 builder.append(" ");
@@ -336,13 +361,14 @@ public class Spritzer {
         } else {
             startSpan = CHARS_LEFT_OF_PIVOT;
             endSpan = startSpan + 1;
-        }
-
+        
+	}
         Spannable spanRange = new SpannableString(word);
         TextAppearanceSpan tas = new TextAppearanceSpan(mTarget.getContext(), R.style.PivotLetter);
         spanRange.setSpan(tas, startSpan, endSpan, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
         mTarget.setText(spanRange);
     }
+
 
     public void pause() {
         mPlayingRequested = false;
