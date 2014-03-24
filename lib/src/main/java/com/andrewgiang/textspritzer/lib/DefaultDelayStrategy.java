@@ -9,7 +9,9 @@ package com.andrewgiang.textspritzer.lib;
 public class DefaultDelayStrategy implements DelayStrategy {
     @Override
     public int delayMultiplier(String word) {
-        if (word.length() >= 13 || word.contains(".") || word.contains("?") || word.contains("!") {
+        if (word.contains(".") || word.contains("?") || word.contains("!")) {
+            return 3;
+        }else if( word.length() >= 13) {
             return 2;
         }
         return 1;
