@@ -1,271 +1,513 @@
 package com.andrewgiang.textspritzer.lib;
 
-import android.content.Context;
-import android.content.res.TypedArray;
-import android.graphics.Canvas;
-import android.graphics.Paint;
-import android.util.AttributeSet;
+import android.os.Handler;
+import android.os.Message;
+import android.text.Spannable;
+import android.text.SpannableString;
+import android.text.style.TextAppearanceSpan;
 import android.util.Log;
-import android.util.TypedValue;
-import android.view.View;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
+import net.clintarmstrong.fbreader.plugin.ospritz.R;
+
+import java.lang.ref.WeakReference;
+import java.util.ArrayDeque;
+import java.util.Arrays;
+
+
 /**
- * Created by andrewgiang on 3/3/14.
+ * Spritzer parses a String into a Queue
+ * of words, and displays them one-by-one
+ * onto a TextView at a given WPM.
  */
-public class SpritzerTextView extends TextView implements View.OnClickListener {
-    /**
-     * Interface definition for a callback to be invoked when the
-     * clickControls are enabled and the view is clicked
-     */
-    public static interface OnClickControlListener {
-        /**
-         * Called when the spritzer pauses upon click
-         */
-        void onPause();
+public class Spritzer {
+    protected static final String TAG = "Spritzer";
+    protected static final boolean VERBOSE = false;
 
-        /**
-         * Called when the spritzer plays upon clicked
-         */
-        void onPlay();
+    protected static final int MSG_PRINT_WORD = 1;
+
+    protected static final int MAX_WORD_LENGTH = 13;
+    protected static final int CHARS_LEFT_OF_PIVOT = 5;
+
+    protected String[] mWordArray;                  // A parsed list of words parsed from {@link #setText(String input)}
+    protected ArrayDeque<String> mWordQueue;        // The queue of words from mWordArray yet to be displayed
+
+    protected TextView mTarget;
+    protected int mWPM;
+
+    protected Handler mSpritzHandler;
+    protected Object mPlayingSync = new Object();
+    protected boolean mPlaying;
+    protected boolean mPlayingRequested;
+    protected boolean mSpritzThreadStarted;
+
+    protected int mCurWordIdx;
+    private ProgressBar mProgressBar;
+
+    public interface OnCompletionListener {
+
+        public void onComplete();
+
     }
 
-    public static final String TAG = SpritzerTextView.class.getName();
-    public static final int PAINT_WIDTH_DP = 4;          // thickness of spritz guide bars in dp
-    // For optimal drawing should be an even number
+    private DelayStrategy mDelayStrategy;
 
-    private Spritzer mSpritzer;
-    private Paint mPaintGuides;
-    private float mPaintWidthPx;
-    private String mTestString;
-    private boolean mDefaultClickListener = false;
-    private int mAdditonalPadding;
+    public void setOnCompletionListener(OnCompletionListener onCompletionListener) {
+        mOnCompletionListener = onCompletionListener;
+    }
+
+    private OnCompletionListener mOnCompletionListener;
+
+
+    public Spritzer(TextView target) {
+        init();
+        mTarget = target;
+        mSpritzHandler = new SpritzHandler(this);
+    }
 
     /**
-     * Register a callback for when the view has been clicked
+     * Prepare to Spritz the given String input
      * <p/>
-     * Note: it is mandatory to use the clickControls
-     *
-     * @param listener
-     */
-    public void setOnClickControlListener(OnClickControlListener listener) {
-        mClickControlListener = listener;
-    }
-
-    private OnClickControlListener mClickControlListener;
-
-
-    public SpritzerTextView(Context context) {
-        super(context);
-        init();
-    }
-
-    public SpritzerTextView(Context context, AttributeSet attrs) {
-        super(context, attrs);
-        init(attrs);
-    }
-
-    public SpritzerTextView(Context context, AttributeSet attrs, int defStyle) {
-        super(context, attrs, defStyle);
-        init(attrs);
-    }
-
-    private void init(AttributeSet attrs) {
-        setAdditionalPadding(attrs);
-        final TypedArray a = getContext().getTheme().obtainStyledAttributes(attrs, R.styleable.SpritzerTextView, 0, 0);
-        try {
-            mDefaultClickListener = a.getBoolean(R.styleable.SpritzerTextView_clickControls, false);
-        } finally {
-            a.recycle();
-        }
-        init();
-
-    }
-
-    private void setAdditionalPadding(AttributeSet attrs) {
-        //check padding attributes
-        int[] attributes = new int[]{android.R.attr.padding, android.R.attr.paddingTop,
-                android.R.attr.paddingBottom};
-
-        final TypedArray paddingArray = getContext().obtainStyledAttributes(attrs, attributes);
-        try {
-            final int padding = paddingArray.getDimensionPixelOffset(0, 0);
-            final int paddingTop = paddingArray.getDimensionPixelOffset(1, 0);
-            final int paddingBottom = paddingArray.getDimensionPixelOffset(2, 0);
-            mAdditonalPadding = Math.max(padding, Math.max(paddingTop, paddingBottom));
-            Log.w(TAG, "Additional Padding " + mAdditonalPadding);
-        } finally {
-            paddingArray.recycle();
-        }
-    }
-
-    private void init() {
-        int pivotPadding = getPivotPadding();
-        setPadding(getPaddingLeft(), pivotPadding, getPaddingRight(), pivotPadding);
-        mPaintWidthPx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, PAINT_WIDTH_DP, getResources().getDisplayMetrics());
-        mSpritzer = new Spritzer(this);
-        mPaintGuides = new Paint(Paint.ANTI_ALIAS_FLAG);
-        mPaintGuides.setColor(getCurrentTextColor());
-        mPaintGuides.setStrokeWidth(mPaintWidthPx);
-        mPaintGuides.setAlpha(128);
-        if (mDefaultClickListener) {
-            this.setOnClickListener(this);
-        }
-
-    }
-
-    @Override
-    protected void onDraw(Canvas canvas) {
-        super.onDraw(canvas);
-
-        // Measurements for top & bottom guide line
-        int beginTopX = 0;
-        int endTopX = getMeasuredWidth();
-        int topY = 0;
-
-        int beginBottomX = 0;
-        int endBottomX = getMeasuredWidth();
-        int bottomY = getMeasuredHeight();
-        // Paint the top guide and bottom guide bars
-        canvas.drawLine(beginTopX, topY, endTopX, topY, mPaintGuides);
-        canvas.drawLine(beginBottomX, bottomY, endBottomX, bottomY, mPaintGuides);
-
-        // Measurements for pivot indicator
-        float centerX = calculatePivotXOffset() + getPaddingLeft();
-        final int pivotIndicatorLength = getPivotIndicatorLength();
-
-        // Paint the pivot indicator
-        canvas.drawLine(centerX, topY + (mPaintWidthPx / 2), centerX, topY + (mPaintWidthPx / 2) + pivotIndicatorLength, mPaintGuides); //line through center of circle
-        canvas.drawLine(centerX, bottomY - (mPaintWidthPx / 2), centerX, bottomY - (mPaintWidthPx / 2) - pivotIndicatorLength, mPaintGuides);
-    }
-
-    private int getPivotPadding() {
-        return getPivotIndicatorLength() * 2 + mAdditonalPadding;
-    }
-
-    @Override
-    public void setTextSize(float size) {
-        super.setTextSize(size);
-        int pivotPadding = getPivotPadding();
-        setPadding(getPaddingLeft(), pivotPadding, getPaddingRight(), pivotPadding);
-
-    }
-
-    private int getPivotIndicatorLength() {
-
-        return getPaint().getFontMetricsInt().bottom;
-    }
-
-    private float calculatePivotXOffset() {
-        // Craft a test String of precise length
-        // to reach pivot character
-        if (mTestString == null) {
-            // Spritzer requires monospace font so character is irrelevant
-            mTestString = "a";
-        }
-        // Measure the rendered distance of CHARS_LEFT_OF_PIVOT chars
-        // plus half the pivot character
-        return (getPaint().measureText(mTestString, 0, 1) * (Spritzer.CHARS_LEFT_OF_PIVOT + .50f));
-    }
-
-    /**
-     * This determines the words per minute the sprizter will read at
-     *
-     * @param wpm the number of words per minute
-     */
-    public void setWpm(int wpm) {
-        mSpritzer.setWpm(wpm);
-    }
-
-
-    /**
-     * Set a custom spritzer
-     *
-     * @param spritzer
-     */
-    public void setSpritzer(Spritzer spritzer) {
-        mSpritzer = spritzer;
-        mSpritzer.swapTextView(this);
-    }
-
-    /**
-     * Pass input text to spritzer object
+     * Call {@link #start()} to begin display
      *
      * @param input
      */
-    public void setSpritzText(String input) {
-        mSpritzer.setText(input);
+    public void setText(String input) {
+        createWordArrayFromString(input);
+        setMaxProgress();
+        refillWordQueue();
     }
 
-    /**
-     * If true, this view will automatically pause or play spritz text upon view clicks
-     * <p/>
-     * If false, the callback OnClickControls are not invoked and
-     *
-     * @param useDefaultClickControls
-     */
-    public void setUseClickControls(boolean useDefaultClickControls) {
-        mDefaultClickListener = useDefaultClickControls;
+    private void setMaxProgress() {
+        if (mWordArray != null && mProgressBar != null) {
+            mProgressBar.setMax(mWordArray.length);
+        }
     }
 
-    /**
-     * Will play the spritz text that was set in setSpritzText
-     */
-    public void play() {
-        mSpritzer.start();
+    private void createWordArrayFromString(String input) {
+        mWordArray = input
+                .replaceAll("/\\s+/g", " ")      // condense adjacent spaces
+                .split(" ");                    // split on spaces
     }
 
-    public void pause() {
-        mSpritzer.pause();
+
+    protected void init() {
+
+        mDelayStrategy = new DefaultDelayStrategy();
+        mWordQueue = new ArrayDeque<String>();
+        mWPM = 500;
+        mPlaying = false;
+        mPlayingRequested = false;
+        mSpritzThreadStarted = false;
+        mCurWordIdx = 0;
+    }
+
+    public int getMinutesRemainingInQueue() {
+        if (mWordQueue.size() == 0) {
+            return 0;
+        }
+        return mWordQueue.size() / mWPM;
     }
 
     public int getWpm() {
-        return mSpritzer.getWpm();
-    }
-
-    public void attachProgressBar(ProgressBar bar) {
-        mSpritzer.attachProgressBar(bar);
-
-    }
-
-    public void setOnCompletionListener(Spritzer.OnCompletionListener listener) {
-
-        mSpritzer.setOnCompletionListener(listener);
+        return mWPM;
     }
 
     /**
-     * @param strategy @see {@link com.andrewgiang.textspritzer.lib.DelayStrategy#delayMultiplier(String)}
+     * Set the target Word Per Minute rate.
+     * Effective immediately.
+     *
+     * @param wpm
      */
-    public void setDelayStrategy(DelayStrategy strategy) {
-        mSpritzer.setDelayStrategy(strategy);
+    public void setWpm(int wpm) {
+        mWPM = wpm;
     }
 
-    public Spritzer getSpritzer() {
-        return mSpritzer;
-    }
-
-    @Override
-    public void onClick(View v) {
-        if (mSpritzer.isPlaying()) {
-            if (mClickControlListener != null) {
-                mClickControlListener.onPause();
-            }
-            pause();
-        } else {
-            if (mClickControlListener != null) {
-                mClickControlListener.onPlay();
-            }
-            play();
+    /**
+     * Swap the target TextView. Call this if your
+     * host Activity is Destroyed and Re-Created.
+     * Effective immediately.
+     *
+     * @param target
+     */
+    public void swapTextView(TextView target) {
+        mTarget = target;
+        if (!mPlaying) {
+            printLastWord();
         }
 
     }
 
-    public int getCurrentWordIndex() {
-        return mSpritzer.mCurWordIdx;
+    /**
+     * Start displaying the String input
+     * fed to {@link #setText(String)}
+     */
+    public void start() {
+        if (mPlaying || mWordArray == null) {
+            return;
+        }
+        if (mWordQueue.isEmpty()) {
+            refillWordQueue();
+        }
+
+        mPlayingRequested = true;
+        startTimerThread();
     }
 
-    public int getMinutesRemainingInQueue() {
-        return mSpritzer.getMinutesRemainingInQueue();
+    private int getInterWordDelay() {
+        return 60000 / mWPM;
     }
+
+    private void refillWordQueue() {
+        updateProgress();
+        mCurWordIdx = 0;
+        mWordQueue.clear();
+        mWordQueue.addAll(Arrays.asList(mWordArray));
+    }
+
+    private void updateProgress() {
+        if (mProgressBar != null) {
+            mProgressBar.setProgress(mCurWordIdx);
+        }
+    }
+
+
+    /**
+     * Read the current head of mWordQueue and
+     * submit the appropriate Messages to mSpritzHandler.
+     * <p/>
+     * Split long words y submitting the first segment of a word
+     * and placing the second at the head of mWordQueue for processing
+     * during the next cycle.
+     * <p/>
+     * Must be called on a background thread, as this method uses
+     * {@link Thread#sleep(long)} to time pauses in display.
+     *
+     * @throws InterruptedException
+     */
+    protected void processNextWord() throws InterruptedException {
+        if (!mWordQueue.isEmpty()) {
+            String word = mWordQueue.remove();
+            mCurWordIdx += 1;
+            // Split long words, at hyphen if present
+            word = splitLongWord(word);
+
+            mSpritzHandler.sendMessage(mSpritzHandler.obtainMessage(MSG_PRINT_WORD, word));
+
+            final int delayMultiplier = mDelayStrategy.delayMultiplier(word);
+            //Do not allow multiplier that is less than 1
+            final int wordDelay = getInterWordDelay() * (mDelayStrategy != null ? delayMultiplier < 1 ? 1 : delayMultiplier : 1);
+            Thread.sleep(wordDelay);
+
+        }
+        updateProgress();
+    }
+
+    /**
+     * Split the given String if appropriate and
+     * add the tail of the split to the head of
+     * {@link #mWordQueue}
+     *
+     * @param word
+     * @return
+     */
+    protected String splitLongWord(String word) {
+        if (word.length() > MAX_WORD_LENGTH) {
+            int splitIndex = findSplitIndex(word);
+            String firstSegment;
+            if (VERBOSE) {
+                Log.i(TAG, "Splitting long word " + word + " into " + word.substring(0, splitIndex) + " and " + word.substring(splitIndex));
+            }
+            firstSegment = word.substring(0, splitIndex);
+            // A word split is always indicated with a hyphen unless ending in a period
+            if (!firstSegment.contains("-") && !firstSegment.endsWith(".")) {
+                firstSegment = firstSegment + "-";
+            }
+            mCurWordIdx--; //have to account for the added word in the queue
+            mWordQueue.addFirst(word.substring(splitIndex));
+            word = firstSegment;
+
+        }
+        return word;
+    }
+
+    /**
+     * Determine the split index on a given String
+     * e.g If it exceeds MAX_WORD_LENGTH or contains a hyphen
+     *
+     * @param thisWord
+     * @return the index on which to split the given String
+     */
+    private int findSplitIndex(String thisWord) {
+        int splitIndex;
+        // Split long words, at hyphen or dot if present.
+        if (thisWord.contains("-")) {
+            splitIndex = thisWord.indexOf("-") + 1;
+        } else if (thisWord.contains(".")) {
+            splitIndex = thisWord.indexOf(".") + 1;
+        } else if (thisWord.length() > MAX_WORD_LENGTH * 2) {
+            // if the word is floccinaucinihilipilifcation, for example.
+            splitIndex = MAX_WORD_LENGTH - 1;
+            // 12 characters plus a "-" == 13.
+        } else {
+            // otherwise we want to split near the middle.
+            splitIndex = Math.round(thisWord.length() / 2F);
+        }
+        // in case we found a split character that was > MAX_WORD_LENGTH characters in.
+        if (splitIndex > MAX_WORD_LENGTH) {
+            // If we split the word at a splitting char like "-" or ".", we added one to the splitIndex
+            // in order to ensure the splitting char appears at the head of the split. Not accounting
+            // for this in the recursive call will cause a StackOverflowException
+            return findSplitIndex(thisWord.substring(0,
+                    wordContainsSplittingCharacter(thisWord) ? splitIndex - 1 : splitIndex));
+        }
+        if (VERBOSE) {
+            Log.i(TAG, "Splitting long word " + thisWord + " into " + thisWord.substring(0, splitIndex) +
+                    " and " + thisWord.substring(splitIndex));
+        }
+        return splitIndex;
+    }
+
+    private boolean wordContainsSplittingCharacter(String word) {
+        return (word.contains(".") || word.contains("-"));
+    }
+
+
+    private void printLastWord() {
+        if (mWordArray != null) {
+            printWord(mWordArray[mWordArray.length - 1]);
+        }
+    }
+
+    /**
+     * Applies the given String to this Spritzer's TextView,
+     * padding the beginning if necessary to align the pivot character.
+     * Styles the pivot character.
+     *
+     * @param word
+     * 
+     * 
+     * from Spritz patent http://www.google.com/patents/US20140016867
+     * the position of the red letter "ORP is defined as
+     * 
+     * TABLE 1
+     *Total Number of 	ORP Character 	ORP Character
+     *Text Characters 	Position 	Position Ratio
+     *3 	2 	0.33
+     *4 	2 	0.25
+     *5 	2 	0.20
+     *6 	3 	0.33
+     *7 	3 	0.29
+     *8 	3 	0.25
+     *9 	3 	0.22
+     *10 	4 	0.30
+     *11 	4 	0.27
+     *12 	4 	0.25
+     *13 	4 	0.23
+     *14-20 	5 	NA
+     * 
+     * 
+     */
+    private void printWord(String word) {
+        int startSpan = 0;
+        int endSpan = 0;
+        word = word.trim();
+        if (VERBOSE) Log.i(TAG + word.length(), word);
+        if (word.length() == 1) {
+            StringBuilder builder = new StringBuilder();
+            for (int x = 0; x < CHARS_LEFT_OF_PIVOT; x++) {
+                builder.append(" ");
+            }
+            builder.append(word);
+            word = builder.toString();
+            startSpan = CHARS_LEFT_OF_PIVOT;
+           endSpan = startSpan + 1;
+
+
+        } else if (word.length() <= MAX_WORD_LENGTH) {
+
+          StringBuilder builder = new StringBuilder();
+	int ORP = 1;
+	switch(word.length()) {
+            case 1:
+                ORP = 2;
+                break;
+            case 2:
+                ORP = 2;
+                break;
+            case 3:
+                ORP = 2;
+                break;
+            case 4:
+                ORP = 2;
+                break;
+            case 5:
+                ORP = 2;
+                break;
+            case 6:
+                ORP = 3;
+                break;
+            case 7:
+                ORP = 3;
+                break;
+            case 8:
+                ORP = 3;
+                break;
+            case 9:
+                ORP = 3;
+                break;
+            case 10:
+                ORP = 4;
+                break;
+            case 11:
+                ORP = 4;
+                break;
+            case 12:
+                ORP = 4;
+                break;
+	        case 13:
+                ORP = 4;
+                break;
+            default:
+                ORP = 5;
+                break;
+        }
+
+            int beginPad = CHARS_LEFT_OF_PIVOT - ORP;
+            for (int x = 0; x <= beginPad; x++) {
+                builder.append(" ");
+            }
+            builder.append(word);
+            word = builder.toString();
+            startSpan = ORP + beginPad;
+            endSpan = startSpan + 1;
+            if (VERBOSE) Log.i(TAG + word.length(), "pivot: " + word.substring(startSpan, endSpan));
+        } else {
+            startSpan = CHARS_LEFT_OF_PIVOT;
+            endSpan = startSpan + 1;
+        
+	}
+        Spannable spanRange = new SpannableString(word);
+        TextAppearanceSpan tas = new TextAppearanceSpan(mTarget.getContext(), R.style.PivotLetter);
+        spanRange.setSpan(tas, startSpan, endSpan, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+        mTarget.setText(spanRange);
+    }
+
+    public void pause() {
+        mPlayingRequested = false;
+    }
+
+    public boolean isPlaying() {
+        return mPlaying;
+    }
+
+    /**
+     * Begin the background timer thread
+     */
+    private void startTimerThread() {
+        synchronized (mPlayingSync) {
+            if (!mSpritzThreadStarted) {
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (VERBOSE) {
+                            Log.i(TAG, "Starting spritzThread with queue length " + mWordQueue.size());
+                        }
+                        mPlaying = true;
+                        mSpritzThreadStarted = true;
+                        while (mPlayingRequested) {
+                            try {
+                                processNextWord();
+                                if (mWordQueue.isEmpty()) {
+                                    if (VERBOSE) {
+                                        Log.i(TAG, "Queue is empty after processNextWord. Pausing");
+                                    }
+                                    mTarget.post(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            if (mOnCompletionListener != null) {
+                                                mOnCompletionListener.onComplete();
+                                            }
+                                        }
+                                    });
+                                    mPlayingRequested = false;
+
+                                }
+                            } catch (InterruptedException e) {
+                                e.printStackTrace();
+                            }
+                        }
+
+
+                        if (VERBOSE)
+                            Log.i(TAG, "Stopping spritzThread");
+                        mPlaying = false;
+                        mSpritzThreadStarted = false;
+
+                    }
+                }).start();
+            }
+        }
+    }
+
+
+    public String[] getWordArray() {
+        return mWordArray;
+    }
+
+    public ArrayDeque<String> getWordQueue() {
+        return mWordQueue;
+    }
+
+    public void attachProgressBar(ProgressBar bar) {
+        if (bar != null) {
+            mProgressBar = bar;
+        }
+    }
+
+
+    /**
+     * @param strategy @see{@link com.andrewgiang.textspritzer.lib.DelayStrategy#delayMultiplier(String) }
+     */
+    public void setDelayStrategy(DelayStrategy strategy) {
+        mDelayStrategy = strategy;
+
+    }
+
+    /**
+     * A Handler intended for creation on the Main thread.
+     * Messages are intended to be passed from a background
+     * timing thread. This Handler communicates timing
+     * thread events to the Main thread for UI update.
+     */
+    protected static class SpritzHandler extends Handler {
+        private WeakReference<Spritzer> mWeakSpritzer;
+
+        public SpritzHandler(Spritzer muxer) {
+            mWeakSpritzer = new WeakReference<Spritzer>(muxer);
+        }
+
+        @Override
+        public void handleMessage(Message inputMessage) {
+            int what = inputMessage.what;
+            Object obj = inputMessage.obj;
+
+            Spritzer spritzer = mWeakSpritzer.get();
+            if (spritzer == null) {
+                return;
+            }
+
+            switch (what) {
+                case MSG_PRINT_WORD:
+                    spritzer.printWord((String) obj);
+                    break;
+                default:
+                    throw new RuntimeException("Unexpected msg what=" + what);
+            }
+        }
+
+    }
+
+
 }
